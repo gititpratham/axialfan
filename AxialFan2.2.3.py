@@ -1,346 +1,180 @@
 import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
 import json
-import os
-import math
+import numpy as np
+import pandas as pd
 from scipy.interpolate import interp1d
+import matplotlib.pyplot as plt
+import re
 
-# Set page config
-st.set_page_config(page_title="Fan Selection Tool", layout="wide")
+# Load fan data from external JSON file
+with open('all.json', 'r') as f:
+    fan_data = json.load(f)
 
-# Function to load fan data from JSON file
-def load_fan_data():
-    # Look for JSON files in the current directory
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    json_files = [f for f in os.listdir(current_dir) if f.endswith('.json')]
-    
-    if not json_files:
-        st.error("No JSON files found in the current directory.")
-        return None
-    
-    # Use the first JSON file found (you could add a file selector later)
-    json_file = os.path.join(current_dir, json_files[0])
-    
-    with open(json_file, 'r') as f:
-        return json.load(f)
-
-# Function to find the best fan models for given requirements
-def find_best_fans(fan_data, required_cmh, required_sp):
-    recommended_fans = []
-    
-    for fan in fan_data:
-        # Extract fan data
-        fan_title = fan.get("Title", "Unknown")
-        data_table = fan.get("DataTable", [])
-        
-        if not data_table:
-            continue
-        
-        # Convert data table to DataFrame for easier analysis
-        df = pd.DataFrame(data_table)
-        
-        # Check if we have enough data points
-        if len(df) < 2:
-            continue
-            
-        # Check if required columns exist
-        required_cols = ["CMH", "SPMM", "StatEff", "BKW"]
-        if not all(col in df.columns for col in required_cols):
-            continue
-            
-        # Convert SPMM to Pa if needed
-        if "SPMM" in df.columns:
-            df["SP_Pa"] = df["SPMM"] * 9.81  # Convert mm water column to Pa
-        
-        # Try to interpolate performance at the required point
-        try:
-            # Sort by CMH for proper interpolation
-            df = df.sort_values("CMH")
-            
-            # Create interpolation functions
-            if len(df) >= 2:
-                f_sp = interp1d(df["CMH"], df["SP_Pa"], bounds_error=False, fill_value="extrapolate")
-                f_eff = interp1d(df["CMH"], df["StatEff"], bounds_error=False, fill_value="extrapolate")
-                f_power = interp1d(df["CMH"], df["BKW"], bounds_error=False, fill_value="extrapolate")
-                
-                # Get performance at required flow
-                interp_sp = float(f_sp(required_cmh))
-                interp_eff = float(f_eff(required_cmh))
-                interp_power = float(f_power(required_cmh))
-                
-                # Get RPM from fan data
-                rpm = fan.get("DefaultOptions", {}).get("RPM", 0)
-                
-                # Calculate performance difference
-                sp_diff = abs(interp_sp - required_sp)
-                
-                # Add to recommended list if within reasonable range 
-                # (20% difference in static pressure)
-                if sp_diff / required_sp <= 0.2:
-                    recommended_fans.append({
-                        "fan_title": fan_title,
-                        "fan_data": fan,
-                        "interp_eff": interp_eff,
-                        "interp_sp": interp_sp,
-                        "interp_power": interp_power,
-                        "rpm": rpm,
-                        "sp_diff": sp_diff
-                    })
-        except Exception as e:
-            # Skip this fan if interpolation fails
-            continue
-    
-    # Sort by efficiency (descending) and then by RPM (ascending)
-    if recommended_fans:
-        recommended_fans.sort(key=lambda x: (-x["interp_eff"], x["rpm"]))
-    
-    return recommended_fans
-
-# Function to calculate additional fan parameters
-def calculate_fan_parameters(fan_data, cmh, sp_pa):
-    # Extract fan data 
-    data_table = fan_data.get("DataTable", [])
-    df = pd.DataFrame(data_table)
-    
-    # Convert mm water column to Pa if needed
-    if "SPMM" in df.columns:
-        df["SP_Pa"] = df["SPMM"] * 9.81
-    
-    # Sort by CMH for proper interpolation
-    df = df.sort_values("CMH")
-    
-    # Create interpolation functions
-    f_sp = interp1d(df["CMH"], df["SP_Pa"], bounds_error=False, fill_value="extrapolate")
-    f_eff = interp1d(df["CMH"], df["StatEff"], bounds_error=False, fill_value="extrapolate")
-    f_power = interp1d(df["CMH"], df["BKW"], bounds_error=False, fill_value="extrapolate")
-    
-    # Calculate parameters
-    # Assuming standard air density of 1.2 kg/m³
-    air_density = 1.2
-    
-    # Convert CMH to m³/s
-    flow_m3s = cmh / 3600
-    
-    # Static pressure in Pa
-    static_pressure = sp_pa
-    
-    # Calculate cross-sectional area (estimated based on flow and typical velocity)
-    # For a more accurate calculation, we'd need the actual fan dimensions
-    estimated_velocity = 10  # typical velocity in m/s
-    estimated_area = flow_m3s / estimated_velocity
-    
-    # Calculate more accurate velocity using the estimated area
-    outlet_velocity = flow_m3s / estimated_area
-    
-    # Velocity pressure
-    velocity_pressure = 0.5 * air_density * (outlet_velocity ** 2)
-    
-    # Total pressure
-    total_pressure = static_pressure + velocity_pressure
-    
-    # Static efficiency from interpolation
-    static_efficiency = float(f_eff(cmh))
-    
-    # Total efficiency (estimated)
-    power_input = float(f_power(cmh))
-    if power_input > 0:
-        total_efficiency = (flow_m3s * total_pressure) / (power_input * 1000) * 100
+# Helper functions (as provided earlier)
+def get_diameter(title):
+    match = re.search(r'(\d+)"', title)
+    if match:
+        diameter_inch = float(match.group(1))
+        diameter_m = diameter_inch * 0.0254  # Convert inches to meters
+        return diameter_m
     else:
-        total_efficiency = 0
-    
-    results = {
-        "Outlet Velocity (m/s)": round(outlet_velocity, 2),
-        "Velocity Pressure (Pa)": round(velocity_pressure, 2),
-        "Total Pressure (Pa)": round(total_pressure, 2),
-        "Static Efficiency (%)": round(static_efficiency, 2),
-        "Total Efficiency (%)": round(total_efficiency, 2),
-        "Power Input (kW)": round(power_input, 3)
-    }
-    
-    return results
+        raise ValueError(f"Cannot extract diameter from title: {title}")
 
-# Function to generate performance curves
-def generate_performance_graph(fan_data, required_cmh, required_sp):
-    # Extract fan data
-    data_table = fan_data.get("DataTable", [])
-    df = pd.DataFrame(data_table)
-    
-    # Convert mm water column to Pa if needed
-    if "SPMM" in df.columns:
-        df["SP_Pa"] = df["SPMM"] * 9.81
-    
-    # Sort by CMH for proper graphing
-    df = df.sort_values("CMH")
-    
-    # Create figure with two subplots
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-    
-    # Plot 1: Static Pressure vs. Flow
-    ax1.plot(df["CMH"], df["SP_Pa"], 'k-', linewidth=2)
-    ax1.set_xlabel('Volume Flow (m³/h)')
-    ax1.set_ylabel('Static Pressure (Pa)')
-    ax1.grid(True, linestyle='--', alpha=0.7)
-    
-    # Add red lines for the required point
-    ax1.axvline(x=required_cmh, color='red', linestyle='-')
-    ax1.axhline(y=required_sp, color='red', linestyle='-')
-    
-    # Plot 2: Power vs. Flow
-    ax2.plot(df["CMH"], df["BKW"], 'k-', linewidth=2)
-    ax2.set_xlabel('Volume Flow (m³/h)')
-    ax2.set_ylabel('Power (kW)')
-    ax2.grid(True, linestyle='--', alpha=0.7)
-    
-    # Add red line for the required flow
-    ax2.axvline(x=required_cmh, color='red', linestyle='-')
-    
-    # Adjust layout
-    plt.tight_layout()
-    
-    return fig
+def get_outlet_area(diameter):
+    return np.pi * (diameter / 2) ** 2
 
-# Main application
-def main():
-    st.title("Fan Selection and Analysis Tool")
+def interpolate_data(data_table, cmh):
+    cmh_values = [point['CMH'] for point in data_table if point['CMH'] != ""]
+    spmm_values = [point['SPMM'] for point in data_table if point['CMH'] != ""]
+    bkw_values = [point['BKW'] for point in data_table if point['CMH'] != ""]
+    stateff_values = [point['StatEff'] for point in data_table if point['CMH'] != ""]
     
-    # Load fan data
-    fan_data = load_fan_data()
-    if not fan_data:
-        st.stop()
+    if not cmh_values or cmh < min(cmh_values) or cmh > max(cmh_values):
+        return None  # Out of range or invalid data
     
-    # Application state
-    if 'page' not in st.session_state:
-        st.session_state.page = 'input'
-    if 'selected_fan' not in st.session_state:
-        st.session_state.selected_fan = None
-    if 'required_cmh' not in st.session_state:
-        st.session_state.required_cmh = 0
-    if 'required_sp' not in st.session_state:
-        st.session_state.required_sp = 0
+    spmm_interp = interp1d(cmh_values, spmm_values, kind='linear')
+    bkw_interp = interp1d(cmh_values, bkw_values, kind='linear')
+    stateff_interp = interp1d(cmh_values, stateff_values, kind='linear')
     
-    # Input page
-    if st.session_state.page == 'input':
-        st.header("Enter Requirements")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            required_cmh = st.number_input("Volume Flow (CMH)", min_value=0.0, value=1000.0, step=100.0)
-            
-        with col2:
-            pressure_unit = st.selectbox("Pressure Unit", ["Pa", "mm H₂O"])
-            if pressure_unit == "Pa":
-                required_sp_input = st.number_input("Static Pressure", min_value=0.0, value=100.0, step=10.0)
-                required_sp = required_sp_input  # Already in Pa
-            else:
-                required_sp_input = st.number_input("Static Pressure", min_value=0.0, value=10.0, step=1.0)
-                required_sp = required_sp_input * 9.81  # Convert to Pa
-        
-        if st.button("Find Best Fans"):
-            st.session_state.required_cmh = required_cmh
-            st.session_state.required_sp = required_sp
-            st.session_state.page = 'recommendations'
+    spmm = float(spmm_interp(cmh))
+    bkw = float(bkw_interp(cmh))
+    stateff = float(stateff_interp(cmh))
     
-    # Recommendations page
-    elif st.session_state.page == 'recommendations':
-        st.header("Recommended Fans")
+    return {'SPMM': spmm, 'BKW': bkw, 'StatEff': stateff}
+
+def calculate_total_efficiency(cmh, spmm, bkw, diameter):
+    Q = cmh / 3600  # Convert CMH to m³/s
+    A = get_outlet_area(diameter)
+    V = Q / A  # Outlet velocity in m/s
+    rho = 1.2  # Air density in kg/m³
+    Pv = 0.5 * rho * V ** 2  # Velocity pressure in Pa
+    P_static_Pa = spmm * 9.80665  # Static pressure in Pa
+    P_total_Pa = P_static_Pa + Pv  # Total pressure in Pa
+    eta_total = (Q * P_total_Pa) / (bkw * 1000) * 100  # Total efficiency in %
+    return eta_total, V, Pv
+
+# Streamlit app
+st.title("Fan Selection Tool")
+
+# Initialize session state
+if 'page' not in st.session_state:
+    st.session_state.page = 'input'
+if 'sorted_recommendations' not in st.session_state:
+    st.session_state.sorted_recommendations = []
+if 'cmh_input' not in st.session_state:
+    st.session_state.cmh_input = None
+if 'static_pr_input' not in st.session_state:
+    st.session_state.static_pr_input = None
+
+# Debug state
+st.write(f"Current page: {st.session_state.page}")
+
+# Input page
+if st.session_state.page == 'input':
+    st.subheader("Enter Fan Requirements")
+    cmh_input = st.number_input("Enter CMH (Cubic Meters per Hour)", min_value=0.0, value=5000.0)
+    static_pr_input = st.number_input("Enter Static Pressure (MMWC)", min_value=0.0, value=10.0)
+
+    if st.button("Get Recommendations"):
+        recommendations = []
+        for fan in fan_data:
+            title = fan['Title']
+            try:
+                diameter = get_diameter(title)
+            except ValueError:
+                continue  # Skip if diameter cannot be extracted
+            data_table = fan['DataTable']
+            interp_result = interpolate_data(data_table, cmh_input)
+            if interp_result is None:
+                continue  # Out of range or invalid data
+            spmm = interp_result['SPMM']
+            if spmm >= static_pr_input:
+                bkw = interp_result['BKW']
+                stateff = interp_result['StatEff']
+                eta_total, _, _ = calculate_total_efficiency(cmh_input, spmm, bkw, diameter)
+                rpm = fan['DefaultOptions']['RPM']
+                recommendations.append({
+                    'title': title,
+                    'eta_total': eta_total,
+                    'rpm': rpm,
+                    'stateff': stateff,
+                    'bkw': bkw,
+                    'spmm': spmm,
+                    'diameter': diameter
+                })
         
-        # Display requirements
-        st.write(f"Volume Flow: {st.session_state.required_cmh} m³/h")
-        if pressure_unit == "Pa":
-            st.write(f"Static Pressure: {st.session_state.required_sp} Pa")
+        if recommendations:
+            # Sort and store in session state
+            st.session_state.sorted_recommendations = sorted(recommendations, key=lambda x: (-x['eta_total'], x['rpm']))
+            st.session_state.cmh_input = cmh_input
+            st.session_state.static_pr_input = static_pr_input
+            st.subheader("Recommended Fan Models")
+            df = pd.DataFrame(st.session_state.sorted_recommendations)
+            df_display = df[['title', 'eta_total', 'rpm', 'stateff', 'bkw']].rename(
+                columns={'title': 'Model', 'eta_total': 'Total Efficiency (%)', 'rpm': 'RPM', 
+                         'stateff': 'Static Efficiency (%)', 'bkw': 'Power (kW)'}
+            )
+            st.dataframe(df_display)
         else:
-            st.write(f"Static Pressure: {st.session_state.required_sp/9.81:.2f} mm H₂O ({st.session_state.required_sp:.2f} Pa)")
-        
-        # Find best fans
-        recommended_fans = find_best_fans(fan_data, st.session_state.required_cmh, st.session_state.required_sp)
-        
-        if not recommended_fans:
-            st.warning("No suitable fans found for the given requirements.")
-            if st.button("Back to Input"):
-                st.session_state.page = 'input'
-            st.stop()
-        
-        # Display recommendations
-        st.write(f"Found {len(recommended_fans)} suitable fan models:")
-        
-        for i, fan in enumerate(recommended_fans):
-            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 1])
-            
-            with col1:
-                st.write(f"**{fan['fan_title']}**")
-            with col2:
-                st.write(f"Efficiency: {fan['interp_eff']:.2f}%")
-            with col3:
-                st.write(f"Static Pressure: {fan['interp_sp']:.2f} Pa")
-            with col4:
-                st.write(f"RPM: {fan['rpm']}")
-            with col5:
-                if st.button("Select", key=f"select_{i}"):
-                    st.session_state.selected_fan = fan
-                    st.session_state.page = 'fan_details'
-        
-        if st.button("Back"):
-            st.session_state.page = 'input'
-    
-    # Fan details page
-    elif st.session_state.page == 'fan_details':
-        if not st.session_state.selected_fan:
-            st.error("No fan selected. Please go back and select a fan.")
-            if st.button("Back to Recommendations"):
-                st.session_state.page = 'recommendations'
-            st.stop()
-        
-        fan = st.session_state.selected_fan
-        st.header(f"Fan Model: {fan['fan_title']}")
-        
-        # Display requirements
-        st.subheader("Requirements")
-        st.write(f"Volume Flow: {st.session_state.required_cmh} m³/h")
-        st.write(f"Static Pressure: {st.session_state.required_sp:.2f} Pa")
-        
-        # Calculate additional parameters
-        params = calculate_fan_parameters(fan['fan_data'], st.session_state.required_cmh, st.session_state.required_sp)
-        
-        # Display parameters
-        st.subheader("Fan Performance")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            for key, value in list(params.items())[:3]:
-                st.metric(key, value)
-        
-        with col2:
-            for key, value in list(params.items())[3:]:
-                st.metric(key, value)
-        
-        # Generate and display performance graph
-        st.subheader("Performance Curves")
-        fig = generate_performance_graph(fan['fan_data'], st.session_state.required_cmh, st.session_state.required_sp)
-        st.pyplot(fig)
-        
-        # Fan details
-        st.subheader("Fan Specifications")
-        default_options = fan['fan_data'].get("DefaultOptions", {})
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**RPM:** {default_options.get('RPM', 'N/A')}")
-            st.write(f"**Power Rating:** {default_options.get('KW', 'N/A')} kW")
-        
-        with col2:
-            st.write(f"**Default CMH:** {default_options.get('CMH', 'N/A')}")
-            st.write(f"**Default Pressure:** {default_options.get('MMWC', 'N/A')} mm H₂O")
-        
-        if st.button("Back to Recommendations"):
-            st.session_state.page = 'recommendations'
-        
-        if st.button("New Selection"):
-            st.session_state.page = 'input'
+            st.warning("No models meet the specified criteria.")
+            st.session_state.sorted_recommendations = []
 
-if __name__ == "__main__":
-    main()
+    # Show model selection and View Details button only if recommendations exist
+    if st.session_state.sorted_recommendations:
+        selected_title = st.selectbox("Select a model", [rec['title'] for rec in st.session_state.sorted_recommendations])
+        if st.button("View Details"):
+            try:
+                st.session_state.selected_model = next(rec for rec in st.session_state.sorted_recommendations if rec['title'] == selected_title)
+                st.session_state.page = 'output'
+                st.write("Page set to output")  # Debug statement
+            except StopIteration:
+                st.error("Selected model not found in recommendations.")
+
+# Output page
+if st.session_state.page == 'output':
+    try:
+        st.subheader(f"Selected Model: {st.session_state.selected_model['title']}")
+        selected_fan = next(fan for fan in fan_data if fan['Title'] == st.session_state.selected_model['title'])
+        cmh_input = st.session_state.cmh_input
+        static_pr_input = st.session_state.static_pr_input
+        diameter = st.session_state.selected_model['diameter']
+        A = get_outlet_area(diameter)
+        Q = cmh_input / 3600
+        V = Q / A  # Outlet velocity
+        rho = 1.2
+        Pv_Pa = 0.5 * rho * V ** 2  # Velocity pressure in Pa
+        Pv_MMWC = Pv_Pa / 9.80665  # Convert to MMWC
+        spmm = st.session_state.selected_model['spmm']
+        P_total_MMWC = spmm + Pv_MMWC  # Total pressure in MMWC
+        stateff = st.session_state.selected_model['stateff']
+        eta_total = st.session_state.selected_model['eta_total']
+
+        # Display calculated outputs
+        st.write("### Calculated Outputs")
+        st.write(f"**Outlet Velocity**: {V:.2f} m/s")
+        st.write(f"**Velocity Pressure**: {Pv_MMWC:.2f} MMWC")
+        st.write(f"**Total Pressure**: {P_total_MMWC:.2f} MMWC")
+        st.write(f"**Static Efficiency**: {stateff:.2f} %")
+        st.write(f"**Total Efficiency**: {eta_total:.2f} %")
+
+        # Plot performance curve
+        data_table = selected_fan['DataTable']
+        cmh_values = [point['CMH'] for point in data_table if point['CMH'] != ""]
+        spmm_values = [point['SPMM'] for point in data_table if point['CMH'] != ""]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(cmh_values, spmm_values, label='Static Pressure Curve', color='black')
+        ax.axvline(x=cmh_input, color='red', linestyle='--', label=f'Input CMH = {cmh_input}')
+        ax.axhline(y=static_pr_input, color='red', linestyle='--', label=f'Input SP = {static_pr_input} MMWC')
+        ax.set_xlabel('Capacity (CMH)')
+        ax.set_ylabel('Static Pressure (MMWC)')
+        ax.set_title('Performance Curve')
+        ax.grid(True)
+        ax.legend()
+        st.pyplot(fig)
+
+        if st.button("Back to Input"):
+            st.session_state.page = 'input'
+            st.session_state.sorted_recommendations = []  # Reset recommendations
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+        st.session_state.page = 'input'
