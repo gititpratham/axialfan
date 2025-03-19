@@ -10,7 +10,7 @@ import re
 with open('all.json', 'r') as f:
     fan_data = json.load(f)
 
-# Helper functions (as provided earlier)
+# Helper functions
 def get_diameter(title):
     match = re.search(r'(\d+)"', title)
     if match:
@@ -145,31 +145,58 @@ if st.session_state.page == 'output':
         Pv_Pa = 0.5 * rho * V ** 2  # Velocity pressure in Pa
         Pv_MMWC = Pv_Pa / 9.80665  # Convert to MMWC
         spmm = st.session_state.selected_model['spmm']
-        P_total_MMWC = spmm + Pv_MMWC  # Total pressure in MMWC
+        P_total_MMWC = static_pr_input + Pv_MMWC  # Total pressure = input SP + velocity pressure
         stateff = st.session_state.selected_model['stateff']
         eta_total = st.session_state.selected_model['eta_total']
+        bkw = st.session_state.selected_model['bkw']
+        rpm = st.session_state.selected_model['rpm']
 
-        # Display calculated outputs
+        # Display calculated outputs with clarification
         st.write("### Calculated Outputs")
+        st.write(f"**Required Static Pressure**: {static_pr_input:.2f} mmWC")
+        st.write(f"**Fan's Delivered Static Pressure**: {spmm:.2f} mmWC")
         st.write(f"**Outlet Velocity**: {V:.2f} m/s")
-        st.write(f"**Velocity Pressure**: {Pv_MMWC:.2f} MMWC")
-        st.write(f"**Total Pressure**: {P_total_MMWC:.2f} MMWC")
+        st.write(f"**Velocity Pressure**: {Pv_MMWC:.2f} mmWC")
+        st.write(f"**Fan's Total Pressure**: {P_total_MMWC:.2f} mmWC")
+        st.write(f"**Power (BKW)**: {bkw:.2f} kW")
+        st.write(f"**RPM**: {rpm}")
         st.write(f"**Static Efficiency**: {stateff:.2f} %")
         st.write(f"**Total Efficiency**: {eta_total:.2f} %")
 
-        # Plot performance curve
+        # Plot performance curves
         data_table = selected_fan['DataTable']
         cmh_values = [point['CMH'] for point in data_table if point['CMH'] != ""]
         spmm_values = [point['SPMM'] for point in data_table if point['CMH'] != ""]
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.plot(cmh_values, spmm_values, label='Static Pressure Curve', color='black')
-        ax.axvline(x=cmh_input, color='red', linestyle='--', label=f'Input CMH = {cmh_input}')
-        ax.axhline(y=static_pr_input, color='red', linestyle='--', label=f'Input SP = {static_pr_input} MMWC')
-        ax.set_xlabel('Capacity (CMH)')
-        ax.set_ylabel('Static Pressure (MMWC)')
-        ax.set_title('Performance Curve')
-        ax.grid(True)
-        ax.legend()
+        stateff_values = [point['StatEff'] for point in data_table if point['CMH'] != ""]
+        sysreg_values = [point['SysReg'] for point in data_table if point['CMH'] != ""]
+
+        fig, ax1 = plt.subplots(figsize=(10, 6))
+
+        # Plot SPMM and SysReg on primary y-axis
+        ax1.plot(cmh_values, spmm_values, label='Static Pressure (SPMM)', color='black')
+        ax1.plot(cmh_values, sysreg_values, label='System Resistance (SysReg)', color='blue')
+        ax1.set_xlabel('Capacity (CMH)')
+        ax1.set_ylabel('Pressure (mmWC)')
+        ax1.grid(True)
+
+        # Create secondary y-axis for StatEff
+        ax2 = ax1.twinx()
+        ax2.plot(cmh_values, stateff_values, label='Static Efficiency (StatEff)', color='green')
+        ax2.set_ylabel('Efficiency (%)')
+
+        # Add vertical and horizontal lines
+        ax1.axvline(x=cmh_input, color='red', linestyle='--', label=f'Input CMH = {cmh_input}')
+        ax1.axhline(y=static_pr_input, color='red', linestyle='--', label=f'Input SP = {static_pr_input} mmWC')
+
+        # Combine legends
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+
+        # Set title
+        ax1.set_title('Fan Performance Curves')
+
+        # Show plot
         st.pyplot(fig)
 
         if st.button("Back to Input"):
