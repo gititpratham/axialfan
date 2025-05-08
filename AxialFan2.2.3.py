@@ -42,16 +42,20 @@ def interpolate_data(data_table, cmh):
     
     return {'SPMM': spmm, 'BKW': bkw, 'StatEff': stateff}
 
-def calculate_total_efficiency(cmh, spmm, bkw, diameter):
-    Q = cmh / 3600  # Convert CMH to m³/s
-    A = get_outlet_area(diameter)
-    V = Q / A  # Outlet velocity in m/s
-    rho = 1.2  # Air density in kg/m³
-    Pv = 0.5 * rho * V ** 2  # Velocity pressure in Pa
-    P_static_Pa = spmm * 9.80665  # Static pressure in Pa
-    P_total_Pa = P_static_Pa + Pv  # Total pressure in Pa
-    eta_total = (Q * P_total_Pa) / (bkw * 1000) * 100  # Total efficiency in %
-    return eta_total, V, Pv
+def calculate_efficiencies(cmh_input, static_pr_input, P_total_MMWC, bkw):
+    Q = cmh_input  # Input capacity in m³/hr
+    P_static = static_pr_input  # Input static pressure in mmWC
+    P_total = P_total_MMWC  # Total pressure in mmWC
+    BKW = bkw  # Fan power in kW
+    constant = 2.725e-3
+    
+    # Static efficiency using input values
+    eta_static = (constant * Q * P_static) / (BKW * 1000) * 100
+    
+    # Total efficiency using total pressure
+    eta_total = (constant * Q * P_total) / (BKW * 1000) * 100
+    
+    return eta_static, eta_total
 
 # Streamlit app
 st.title("Fan Selection Tool")
@@ -65,9 +69,6 @@ if 'cmh_input' not in st.session_state:
     st.session_state.cmh_input = None
 if 'static_pr_input' not in st.session_state:
     st.session_state.static_pr_input = None
-
-# Debug state
-st.write(f"Current page: {st.session_state.page}")
 
 # Input page
 if st.session_state.page == 'input':
@@ -91,7 +92,16 @@ if st.session_state.page == 'input':
             if spmm >= static_pr_input:
                 bkw = interp_result['BKW']
                 stateff = interp_result['StatEff']
-                eta_total, _, _ = calculate_total_efficiency(cmh_input, spmm, bkw, diameter)
+                # Calculate velocity pressure for total pressure
+                A = get_outlet_area(diameter)
+                Q_m3s = cmh_input / 3600
+                V = Q_m3s / A
+                rho = 1.2
+                Pv_Pa = 0.5 * rho * V ** 2
+                Pv_MMWC = Pv_Pa / 9.80665
+                P_total_MMWC = static_pr_input + Pv_MMWC
+                # Calculate efficiencies
+                eta_static, eta_total = calculate_efficiencies(cmh_input, static_pr_input, P_total_MMWC, bkw)
                 rpm = fan['DefaultOptions']['RPM']
                 recommendations.append({
                     'title': title,
@@ -100,11 +110,11 @@ if st.session_state.page == 'input':
                     'stateff': stateff,
                     'bkw': bkw,
                     'spmm': spmm,
-                    'diameter': diameter
+                    'diameter': diameter,
+                    'P_total_MMWC': P_total_MMWC
                 })
         
         if recommendations:
-            # Sort and store in session state
             st.session_state.sorted_recommendations = sorted(recommendations, key=lambda x: (-x['eta_total'], x['rpm']))
             st.session_state.cmh_input = cmh_input
             st.session_state.static_pr_input = static_pr_input
@@ -119,89 +129,87 @@ if st.session_state.page == 'input':
             st.warning("No models meet the specified criteria.")
             st.session_state.sorted_recommendations = []
 
-    # Show model selection and View Details button only if recommendations exist
     if st.session_state.sorted_recommendations:
         selected_title = st.selectbox("Select a model", [rec['title'] for rec in st.session_state.sorted_recommendations])
         if st.button("View Details"):
             try:
                 st.session_state.selected_model = next(rec for rec in st.session_state.sorted_recommendations if rec['title'] == selected_title)
                 st.session_state.page = 'output'
-                st.write("Page set to output")  # Debug statement
             except StopIteration:
                 st.error("Selected model not found in recommendations.")
 
 # Output page
 if st.session_state.page == 'output':
-    try:
-        st.subheader(f"Selected Model: {st.session_state.selected_model['title']}")
-        selected_fan = next(fan for fan in fan_data if fan['Title'] == st.session_state.selected_model['title'])
-        cmh_input = st.session_state.cmh_input
-        static_pr_input = st.session_state.static_pr_input
-        diameter = st.session_state.selected_model['diameter']
-        A = get_outlet_area(diameter)
-        Q = cmh_input / 3600
-        V = Q / A  # Outlet velocity
-        rho = 1.2
-        Pv_Pa = 0.5 * rho * V ** 2  # Velocity pressure in Pa
-        Pv_MMWC = Pv_Pa / 9.80665  # Convert to MMWC
-        spmm = st.session_state.selected_model['spmm']
-        P_total_MMWC = static_pr_input + Pv_MMWC  # Total pressure = input SP + velocity pressure
-        stateff = st.session_state.selected_model['stateff']
-        eta_total = st.session_state.selected_model['eta_total']
-        bkw = st.session_state.selected_model['bkw']
-        rpm = st.session_state.selected_model['rpm']
+    st.subheader(f"Selected Model: {st.session_state.selected_model['title']}")
+    selected_fan = next(fan for fan in fan_data if fan['Title'] == st.session_state.selected_model['title'])
+    cmh_input = st.session_state.cmh_input
+    static_pr_input = st.session_state.static_pr_input
+    diameter = st.session_state.selected_model['diameter']
+    A = get_outlet_area(diameter)
+    Q_m3s = cmh_input / 3600
+    V = Q_m3s / A
+    rho = 1.2
+    Pv_Pa = 0.5 * rho * V ** 2
+    Pv_MMWC = Pv_Pa / 9.80665
+    spmm = st.session_state.selected_model['spmm']
+    P_total_MMWC = static_pr_input + Pv_MMWC
+    bkw = st.session_state.selected_model['bkw']
+    rpm = st.session_state.selected_model['rpm']
+    eta_static, eta_total = calculate_efficiencies(cmh_input, static_pr_input, P_total_MMWC, bkw)
 
-        # Display calculated outputs with clarification
-        st.write("### Calculated Outputs")
-        st.write(f"**Required Static Pressure**: {static_pr_input:.2f} mmWC")
-        st.write(f"**Fan's Delivered Static Pressure**: {spmm:.2f} mmWC")
-        st.write(f"**Outlet Velocity**: {V:.2f} m/s")
-        st.write(f"**Velocity Pressure**: {Pv_MMWC:.2f} mmWC")
-        st.write(f"**Fan's Total Pressure**: {P_total_MMWC:.2f} mmWC")
-        st.write(f"**Power (BKW)**: {bkw:.2f} kW")
-        st.write(f"**RPM**: {rpm}")
-        st.write(f"**Static Efficiency**: {stateff:.2f} %")
-        st.write(f"**Total Efficiency**: {eta_total:.2f} %")
+    # Display calculated outputs
+    st.write("### Calculated Outputs")
+    st.write(f"**Required Static Pressure**: {static_pr_input:.2f} mmWC")
+    st.write(f"**Fan's Delivered Static Pressure**: {spmm:.2f} mmWC")
+    st.write(f"**Outlet Velocity**: {V:.2f} m/s")
+    st.write(f"**Velocity Pressure**: {Pv_MMWC:.2f} mmWC")
+    st.write(f"**Total Pressure**: {P_total_MMWC:.2f} mmWC")
+    st.write(f"**Power (BKW)**: {bkw:.2f} kW")
+    st.write(f"**RPM**: {rpm}")
+    st.write(f"**Static Efficiency**: {eta_static:.2f} %")
+    st.write(f"**Total Efficiency**: {eta_total:.2f} %")
 
-        # Plot performance curves
-        data_table = selected_fan['DataTable']
-        cmh_values = [point['CMH'] for point in data_table if point['CMH'] != ""]
-        spmm_values = [point['SPMM'] for point in data_table if point['CMH'] != ""]
-        stateff_values = [point['StatEff'] for point in data_table if point['CMH'] != ""]
-        sysreg_values = [point['SysReg'] for point in data_table if point['CMH'] != ""]
+    # Plot performance curves with subplots
+    data_table = selected_fan['DataTable']
+    cmh_values = [point['CMH'] for point in data_table if point['CMH'] != ""]
+    spmm_values = [point['SPMM'] for point in data_table if point['CMH'] != ""]
+    stateff_values = [point['StatEff'] for point in data_table if point['CMH'] != ""]
+    sysreg_values = [point['SysReg'] for point in data_table if point['CMH'] != ""]
+    bkw_values = [point['BKW'] for point in data_table if point['CMH'] != ""]
 
-        fig, ax1 = plt.subplots(figsize=(10, 6))
+    # Create figure with two subplots
+    fig, (ax1, ax3) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
 
-        # Plot SPMM and SysReg on primary y-axis
-        ax1.plot(cmh_values, spmm_values, label='Static Pressure (SPMM)', color='black')
-        ax1.plot(cmh_values, sysreg_values, label='System Resistance (SysReg)', color='blue')
-        ax1.set_xlabel('Capacity (CMH)')
-        ax1.set_ylabel('Pressure (mmWC)')
-        ax1.grid(True)
+    # Top subplot: Pressure and Efficiency
+    ax1.plot(cmh_values, spmm_values, label='Static Pressure (SPMM)', color='black')
+    ax1.plot(cmh_values, sysreg_values, label='System Resistance (SysReg)', color='blue')
+    ax1.set_ylabel('Pressure (mmWC)')
+    ax1.grid(True)
 
-        # Create secondary y-axis for StatEff
-        ax2 = ax1.twinx()
-        ax2.plot(cmh_values, stateff_values, label='Static Efficiency (StatEff)', color='green')
-        ax2.set_ylabel('Efficiency (%)')
+    ax2 = ax1.twinx()
+    ax2.plot(cmh_values, stateff_values, label='Static Efficiency (StatEff)', color='green')
+    ax2.set_ylabel('Efficiency (%)')
 
-        # Add vertical and horizontal lines
-        ax1.axvline(x=cmh_input, color='red', linestyle='--', label=f'Input CMH = {cmh_input}')
-        ax1.axhline(y=static_pr_input, color='red', linestyle='--', label=f'Input SP = {static_pr_input} mmWC')
+    ax1.axvline(x=cmh_input, color='red', linestyle='--', label=f'Input CMH = {cmh_input}')
+    ax1.axhline(y=static_pr_input, color='red', linestyle='--', label=f'Input SP = {static_pr_input} mmWC')
 
-        # Combine legends
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    ax1.set_title('Fan Performance: Pressure and Efficiency')
 
-        # Set title
-        ax1.set_title('Fan Performance Curves')
+    # Bottom subplot: BKW
+    ax3.plot(cmh_values, bkw_values, label='Power (BKW)', color='purple')
+    ax3.set_xlabel('Capacity (CMH)')
+    ax3.set_ylabel('Power (kW)')
+    ax3.grid(True)
+    ax3.axvline(x=cmh_input, color='red', linestyle='--', label=f'Input CMH = {cmh_input}')
+    ax3.legend(loc='upper left')
+    ax3.set_title('Fan Power Curve')
 
-        # Show plot
-        st.pyplot(fig)
+    plt.tight_layout()
+    st.pyplot(fig)
 
-        if st.button("Back to Input"):
-            st.session_state.page = 'input'
-            st.session_state.sorted_recommendations = []  # Reset recommendations
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
+    if st.button("Back to Input"):
         st.session_state.page = 'input'
+        st.session_state.sorted_recommendations = []
